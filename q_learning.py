@@ -1,7 +1,7 @@
 import numpy as np
 import gym
 
-env = gym.make('FrozenLake-v0')
+env = gym.make('FrozenLake8x8-v0')
 
 Q = np.zeros((env.observation_space.n, env.action_space.n))
 lr = 0.8
@@ -32,4 +32,4 @@ for i in range(2000):
 
 
 print('Learned Policy')
-print(Q)
+print(np.argmax(Q, axis=1))

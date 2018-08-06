@@ -44,7 +44,6 @@ def evaluate_policy(env, policy, gamma, n=100):
 
 gamma = 1.0
 
-max_iterations = 100000
 eps = 1e-20
 
 env = gym.make('FrozenLake8x8-v0')
@@ -55,7 +54,7 @@ nA = env.action_space.n
 P = env.env.P
 
 v = np.zeros(nS)
-for i in range(max_iterations):
+for i in range(10000):
     prev_v = np.copy(v)
 
     for s in range(nS):
@@ -77,3 +76,4 @@ for s in range(nS):
 total_reward = evaluate_policy(env, policy, gamma)
 
 print('Average policy score %.2f' % (total_reward))
+print(policy)
