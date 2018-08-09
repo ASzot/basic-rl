@@ -1,88 +1,165 @@
+# https://github.com/higgsfield/RL-Adventure/blob/master/1.dqn.ipynb
 import random
+import math
+from collections import deque
+import numpy as np
 
 import gym
 
 import torch
 import torch.nn as nn
+import torch.autograd as autograd
 import torch.optim as optim
+from collections import namedtuple
+
+
+class DummyEnv(object):
+    def __init__(self, env):
+        self.env = env
+
+    def step(self, action):
+        next_state, reward, done, info = self.env.step(action[0])
+        return np.expand_dims(next_state, 0), reward, done, info
+
+    def reset(self):
+        return np.expand_dims(self.env.reset(), 0)
+
+    @property
+    def observation_shape(self):
+        return [1, *self.env.observation_space.shape]
+
+    @property
+    def action_space(self):
+        return self.env.action_space
 
 
 
-Transition = namedtuple('Transition', ('state', 'action', 'next_state', 'reward'))
+USE_CUDA = torch.cuda.is_available()
+Variable = lambda *args, **kwargs: autograd.Variable(*args, **kwargs).cuda() if USE_CUDA else autograd.Variable(*args, **kwargs)
+
+
+Transition = namedtuple('Transition', ('state', 'action', 'reward', 'next_state', 'done'))
+
 
 class ReplayMemory(object):
     def __init__(self, capacity):
-        self.capacity = capacity
-        self.memory = []
-        self.position = 0
+        self.memory = deque(maxlen=capacity)
 
     def push(self, *args):
-        """Saves a transition."""
-        if len(self.memory) < self.capacity:
-            self.memory.append(None)
-        self.memory[self.position] = Transition(*args)
-        self.position = (self.position + 1) % self.capacity
+        self.memory.append(Transition(*args))
 
     def sample(self, batch_size):
-        return random.sample(self.memory, batch_size)
+        state, action, reward, next_state, done = zip(*random.sample(self.memory, batch_size))
+        return np.concatenate(state), action, reward, np.concatenate(next_state), done
 
     def __len__(self):
         return len(self.memory)
 
 
-def DQN(nn.Module):
-    def __init__(self, n_states, n_actions):
+class DQN(nn.Module):
+    def __init__(self, n_states, n_actions, hidden_size=128):
         super().__init__()
-        self.fc1 = nn.Linear(n_states, 32)
-        self.fc2 = nn.Linear(32, n_actions)
-
+        print('there are # states', n_states)
+        self.layers = nn.Sequential(
+                nn.Linear(n_states, hidden_size),
+                nn.ReLU(),
+                nn.Linear(hidden_size, hidden_size),
+                nn.ReLU(),
+                nn.Linear(hidden_size, n_actions)
+            )
 
     def forward(self, x):
-        x = F.relu(self.fc1(x))
-        return F.tanh(self.fc2(x))
+        return self.layers(x)
+
+    def act(self, state, epsilon):
+        if random.random() > epsilon:
+            state = torch.FloatTensor(state)
+            q_value = self.forward(state)
+            action = q_value.max(1)[1].data.numpy()
+        else:
+            action = np.random.randint(low = 0, high = env.action_space.n,
+                    size=(1,))
+
+        return action
 
 
+env = gym.make('CartPole-v0')
 
-batch_size = 128
+env = DummyEnv(env)
+
+model = DQN(env.observation_shape[1], env.action_space.n)
+if USE_CUDA:
+    model = model.cuda()
+
+optimizer = optim.Adam(model.parameters())
+
+replay_buffer = ReplayMemory(1000)
+
+def compute_td_loss(batch_size):
+    state, action, reward, next_state, done = replay_buffer.sample(batch_size)
+
+    state = Variable(torch.FloatTensor(np.float32(state)))
+    next_state = Variable(torch.FloatTensor(np.float32(next_state)), volatile=True)
+    action = Variable(torch.LongTensor(action))
+    reward = Variable(torch.FloatTensor(reward))
+    done = Variable(torch.FloatTensor(done))
+
+    q_values = model(state)
+    q_values_next = model(next_state)
+
+    q_value = q_values.gather(1, action).squeeze(1)
+
+    next_q_value =  q_values.max(1)[0]
+    expected_q_value = reward + gamma * next_q_value * (1 - done)
+
+    loss = (q_value - Variable(expected_q_value.data)).pow(2).mean()
+
+    optimizer.zero_grad()
+    loss.backward()
+    optimizer.step()
+
+    return loss
+
+
+log_interval = 100
+losses = []
+all_rewards = []
+episode_reward = 0
+
+num_frames = int(1e5)
+batch_size = 32
 gamma = 0.99
-eps_start = 0.9
-eps_end = 0.05
-eps_decay = 200
-target_update = 10
 
-policy_net = DQN()
-target_net = DQN()
+eps_start = 1.0
+eps_end = 0.01
+eps_decay = 500
 
-target_net.load_state_dict(policy_net.state_dict())
-target_net.eval()
+state = env.reset()
 
-optimizer = optim.RMSprop(policy_net.parameters())
-memory = ReplayMemory(10000)
+for frame_idx in range(num_frames):
+    # Calculate epsilon
+    eps = eps_end + (eps_start - eps_end) * math.exp(-1.0 * frame_idx /
+            eps_decay)
 
-steps_done = 0
+    action = model.act(state, eps)
 
+    next_state, reward, done, _ = env.step(action)
+    replay_buffer.push(state, action, reward, next_state, done)
 
-def select(state):
-    global steps_done
+    state = next_state
+    episode_reward += reward
 
-    sample = rando.random()
-    eps_threshold = EPS_END + (EPS_START - EPS_END) * math.exp(-1 * steps_done / EPS_DECAY)
+    if done:
+        state = env.reset()
+        all_rewards.append(episode_reward)
+        episode_reward = 0
 
-    steps_done += 1
-    if sample > eps_threshold:
-        with torch.no_grad():
-            result = policy_net(state).max(1)
-            import pdb; pdb.set_trace()
-            return result
-    else:
-        return torch.tensor([[random.randrange(2)]], dtype=torch.long)
+    if len(replay_buffer) > batch_size:
+        loss = compute_td_loss(batch_size)
+        losses.append(loss.data.numpy())
 
-
-def train():
-    if len(memory) < batch_size:
-        return
-
-    transitions = memory.sample(batch_size)
-
-    batch = Transition(*zip(*transitions))
+    if frame_idx % log_interval == 0:
+        print('Iteration %i) Loss: %.5f, Reward: %.5f' %
+                (frame_idx, np.mean(losses[-log_interval:]),
+                    np.mean(all_rewards[-log_interval:])))
 
