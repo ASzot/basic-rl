@@ -40,7 +40,6 @@ Variable = lambda *args, **kwargs: autograd.Variable(*args, **kwargs).cuda() if 
 
 Transition = namedtuple('Transition', ('state', 'action', 'reward', 'next_state', 'done'))
 
-
 class ReplayMemory(object):
     def __init__(self, capacity):
         self.memory = deque(maxlen=capacity)
@@ -59,21 +58,32 @@ class ReplayMemory(object):
 class DQN(nn.Module):
     def __init__(self, n_states, n_actions, hidden_size=128):
         super().__init__()
-        print('there are # states', n_states)
-        self.layers = nn.Sequential(
+        self.features = nn.Sequential(
                 nn.Linear(n_states, hidden_size),
                 nn.ReLU(),
+            )
+
+        self.value = nn.Sequential(
+                nn.Linear(hidden_size, hidden_size),
+                nn.ReLU(),
+                nn.Linear(hidden_size, 1)
+            )
+
+        self.advantage = nn.Sequential(
                 nn.Linear(hidden_size, hidden_size),
                 nn.ReLU(),
                 nn.Linear(hidden_size, n_actions)
             )
 
     def forward(self, x):
-        return self.layers(x)
+        x = self.features(x)
+        value = self.value(x)
+        adv = self.advantage(x)
+        return value + adv - adv.mean()
 
     def act(self, state, epsilon):
         if random.random() > epsilon:
-            state = torch.FloatTensor(state)
+            state = Variable(torch.FloatTensor(state), volatile=True)
             q_value = self.forward(state)
             action = q_value.max(1)[1].data.numpy()
         else:
@@ -84,16 +94,25 @@ class DQN(nn.Module):
 
 
 env = gym.make('CartPole-v0')
-
 env = DummyEnv(env)
 
-model = DQN(env.observation_shape[1], env.action_space.n)
-if USE_CUDA:
-    model = model.cuda()
+cur_model = DQN(env.observation_shape[1], env.action_space.n)
+target_model = DQN(env.observation_shape[1], env.action_space.n)
 
-optimizer = optim.Adam(model.parameters())
+
+if USE_CUDA:
+    cur_model = cur_model.cuda()
+    target_model = target_model.cuda()
+
+optimizer = optim.Adam(cur_model.parameters())
 
 replay_buffer = ReplayMemory(1000)
+
+def update_target_model(cur_model, target_model):
+    # Copies all of the parameters of `cur_model` to `target_model`
+    target_model.load_state_dict(cur_model.state_dict())
+
+update_target_model(cur_model, target_model)
 
 def compute_td_loss(batch_size):
     state, action, reward, next_state, done = replay_buffer.sample(batch_size)
@@ -104,13 +123,14 @@ def compute_td_loss(batch_size):
     reward = Variable(torch.FloatTensor(reward))
     done = Variable(torch.FloatTensor(done))
 
-    q_values = model(state)
-    q_values_next = model(next_state)
+    q_values = cur_model(state)
+    q_values_next = cur_model(next_state)
+    q_state_values_next = target_model(next_state)
 
     q_value = q_values.gather(1, action).squeeze(1)
+    q_value_next =  q_state_values_next.gather(1, torch.max(q_values_next, 1)[1].unsqueeze(1)).squeeze(1)
 
-    next_q_value =  q_values.max(1)[0]
-    expected_q_value = reward + gamma * next_q_value * (1 - done)
+    expected_q_value = reward + gamma * q_value_next * (1 - done)
 
     loss = (q_value - Variable(expected_q_value.data)).pow(2).mean()
 
@@ -121,12 +141,13 @@ def compute_td_loss(batch_size):
     return loss
 
 
-log_interval = 100
 losses = []
 all_rewards = []
 episode_reward = 0
 
-num_frames = int(1e5)
+# Hyperparameters
+log_interval = 100
+num_frames = int(1e4)
 batch_size = 32
 gamma = 0.99
 
@@ -134,14 +155,15 @@ eps_start = 1.0
 eps_end = 0.01
 eps_decay = 500
 
+model_sync_interval = 100
+
 state = env.reset()
 
 for frame_idx in range(num_frames):
-    # Calculate epsilon
     eps = eps_end + (eps_start - eps_end) * math.exp(-1.0 * frame_idx /
             eps_decay)
 
-    action = model.act(state, eps)
+    action = cur_model.act(state, eps)
 
     next_state, reward, done, _ = env.step(action)
     replay_buffer.push(state, action, reward, next_state, done)
@@ -157,6 +179,9 @@ for frame_idx in range(num_frames):
     if len(replay_buffer) > batch_size:
         loss = compute_td_loss(batch_size)
         losses.append(loss.data.numpy())
+
+    if frame_idx % log_interval == 0:
+        update_target_model(cur_model, target_model)
 
     if frame_idx % log_interval == 0:
         print('Iteration %i) Loss: %.5f, Reward: %.5f' %
