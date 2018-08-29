@@ -1,15 +1,12 @@
-# Basic Reinforcement Learning Algorithms
+# Deep Q Networks
 
-This is a collection of reinforcement learning algorithms that do use deep
-learning techniques. These are the fundamental algorithms. Each file is a
-completely seperately contained algorithm. 
+A collection of RL approaches using deep Q networks. The following algorithms are included.
+- Deep Q Networks
+- Double Deep Q Networks
+- Dueling Deep Q Networks 
 
-I will continue to expand this with more algorithms. 
+Each file is a completely independent algorithm to be ran separately. 
 
-I am going to write an accompanying blog post for this soon. 
+Here is the accompanying blog post https://www.andrewszot.com/blog/machine_learning/reinforcement_learning/rl_basics
 
-### Deep Q Networks
 
-### Double Deep Q Networks
-
-### Dueling Deep Q Networks
